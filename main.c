@@ -3,7 +3,7 @@
 #include <string.h>
 
 int main(void){
-    char* example;
-    fscanf("%s", example);
-    printf("Решить \"%s\" всегда легко!");
+    char example[100];
+    scanf("%99s", example);
+    printf("Solve \"%s\" always easy!", example);
 }
