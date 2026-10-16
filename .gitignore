@@ -6,3 +6,4 @@ obj/
 *.pdb
 *.obj
 main.obj
+e-test.c
