@@ -43,14 +43,57 @@ int symb(char a){
     return 0;
 }
 
-char** parser(char* a, int n){
-    char* pars[128];
-   
-    return pars;
+StrList parser(const char* a){
+    StrList out;
+    list_init(&out);
+
+    char buf[256];
+    size_t k=0;
+
+    for (int i=0; a[i] != '\0'; i++){
+        char l=a[i];
+        if (l == ' '){
+            if (k > 0){
+                buf[k] = '\0';
+                list_push(&out, buf);
+                k = 0;
+            } 
+        } else if (symb(l)){
+            if (k > 0){
+                buf[k] = '\0';
+                list_push(&out, buf);
+                k = 0;
+            }
+            char _temp[2] = {l, '\0'};
+            list_push(&out, _temp);
+        }
+        else {
+            if (k < sizeof(buf)){
+                buf[k] = l;
+                k++;
+            }
+        }
+    }
+
+    if (k > 0) {
+        buf[k] = '\0';
+        list_push(&out, buf);
+    }
+
+    return out;
 }
 
 int main(void){
     char example[512];
-    scanf("%511s", example);
-    printf("Solve \"%s\" is always easy!", example);
+    if (fgets(example, sizeof(example), stdin) == NULL) {
+        // ошибка или EOF
+        return 1;
+    }
+    example[strcspn(example, "\n")] = '\0';   // убрать '\n' с конца
+    printf("Solve \"%s\" is always easy!\n", example);
+    StrList pars = parser(example);
+    for (int i=0; i<pars.count; i++){
+        printf("%s, ", pars.items[i]);
+    }
+    printf("\nAll items: %zu", pars.count);
 }
