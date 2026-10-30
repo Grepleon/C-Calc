@@ -1,172 +1,238 @@
-#include <stdio.h> 
+/*
+ * C-Calc — простой калькулятор на языке C.
+ *
+ * Поддерживает: + - * /, скобки (), унарный минус и числа
+ * с плавающей точкой. Читает одно выражение из stdin и
+ * печатает ответ в stdout.
+ *
+ * Разбор построен на рекурсивном спуске:
+ *   expression := term { ('+' | '-') term }
+ *   term       := factor { ('*' | '/') factor }
+ *   factor     := число | '(' expression ')' | '-' factor
+ */
+
+#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* ------------------------------------------------------------------
+ * Лексер: разбивает входную строку на токены
+ * ------------------------------------------------------------------ */
+
+typedef enum {
+    TOK_NUMBER, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH,
+    TOK_LPAREN, TOK_RPAREN, TOK_END, TOK_ERROR
+} token_kind;
+
 typedef struct {
-    char **items;
-    size_t count;
-    size_t cap;
-} StrList;
+    token_kind kind;
+    double value;      /* значение, если kind == TOK_NUMBER */
+    const char *error; /* сообщение, если kind == TOK_ERROR */
+} token;
 
-int power_max = 999;
-int count_errors = 0;
-char* errors = "";
-int global_index = 0;
+typedef struct {
+    const char *src;   /* входная строка */
+    size_t pos;        /* текущая позиция */
+} lexer;
 
-int power_symbol(char* a){
-    if (a[0] == '+') return 1;
-    if (a[0] == '-') return 1;
-    if (a[0] == '*') return 2;
-    if (a[0] == '/') return 2;
-    if (a[0] == ')') return power_max;
-    if (a[0] == '(') return power_max;
-    count_errors++;
-    return -1;
-}
-
-static void list_init(StrList *l) {
-    l->items = NULL;
-    l->count = 0;
-    l->cap = 0;
-}
-
-static void list_push(StrList *l, const char *s) {
-    if (l->count == l->cap) {
-        l->cap = l->cap ? l->cap * 2 : 8;
-        char **tmp = realloc(l->items, l->cap * sizeof(char*));
-        if (!tmp) { perror("realloc"); exit(1); }
-        l->items = tmp;
+/* Пропустить пробельные символы */
+static void skip_spaces(lexer *lx) {
+    while (lx->src[lx->pos] != '\0' &&
+           isspace((unsigned char)lx->src[lx->pos])) {
+        lx->pos++;
     }
-    l->items[l->count] = strdup(s);   // POSIX; или malloc+memcpy
-    if (!l->items[l->count]) { perror("strdup"); exit(1); }
-    l->count++;
 }
 
-static void list_free(StrList *l) {
-    for (size_t i = 0; i < l->count; i++) free(l->items[i]);
-    free(l->items);
-    l->items = NULL;
-    l->count = l->cap = 0;
-}
+/* Взять следующий токен */
+static token next_token(lexer *lx) {
+    token tok;
+    tok.kind = TOK_ERROR;
+    tok.value = 0.0;
+    tok.error = NULL;
 
-int symb(char a){
-    if (a == '+') return 1;
-    if (a == '-') return 1;
-    if (a == '*') return 1;
-    if (a == '/') return 1;
-    if (a == '(') return 1;
-    if (a == ')') return 1;
-    return 0;
-}
+    skip_spaces(lx);
 
-StrList parser(const char* a){
-    StrList out;
-    list_init(&out);
+    char c = lx->src[lx->pos];
+    if (c == '\0') {
+        tok.kind = TOK_END;
+        return tok;
+    }
 
-    char buf[256];
-    size_t k=0;
-
-    for (int i=0; a[i] != '\0'; i++){
-        char l=a[i];
-        if (l == ' '){
-            if (k > 0){
-                buf[k] = '\0';
-                list_push(&out, buf);
-                k = 0;
-            } 
-        } else if (symb(l)){
-            if (k > 0){
-                buf[k] = '\0';
-                list_push(&out, buf);
-                k = 0;
-            }
-            char _temp[2] = {l, '\0'};
-            list_push(&out, _temp);
+    /* Число (целое или с плавающей точкой) */
+    if (isdigit((unsigned char)c) || c == '.') {
+        char *end = NULL;
+        tok.kind = TOK_NUMBER;
+        tok.value = strtod(lx->src + lx->pos, &end);
+        if (end == lx->src + lx->pos) {
+            tok.error = "некорректное число";
+            return tok;
         }
-        else {
-            if (k < sizeof(buf)){
-                buf[k] = l;
-                k++;
+        lx->pos = (size_t)(end - lx->src);
+        return tok;
+    }
+
+    lx->pos++;
+    switch (c) {
+        case '+': tok.kind = TOK_PLUS;   break;
+        case '-': tok.kind = TOK_MINUS;  break;
+        case '*': tok.kind = TOK_STAR;   break;
+        case '/': tok.kind = TOK_SLASH;  break;
+        case '(': tok.kind = TOK_LPAREN; break;
+        case ')': tok.kind = TOK_RPAREN; break;
+        default:
+            tok.error = "неизвестный символ";
+            break;
+    }
+    return tok;
+}
+
+/* ------------------------------------------------------------------
+ * Парсер: рекурсивный спуск
+ * ------------------------------------------------------------------ */
+
+typedef struct {
+    lexer *lx;     /* лексер */
+    token cur;     /* текущий токен */
+    int failed;    /* флаг ошибки разбора */
+} parser;
+
+/* Перейти к следующему токену */
+static void parser_advance(parser *p) {
+    p->cur = next_token(p->lx);
+    if (p->cur.kind == TOK_ERROR) {
+        p->failed = 1;
+    }
+}
+
+static double parse_expression(parser *p);
+
+/* factor := число | '(' expression ')' | '-' factor */
+static double parse_factor(parser *p) {
+    if (p->failed) {
+        return 0.0;
+    }
+
+    /* Унарный минус: -5, -(2+3), 2 * -3 */
+    if (p->cur.kind == TOK_MINUS) {
+        parser_advance(p);
+        return -parse_factor(p);
+    }
+
+    if (p->cur.kind == TOK_NUMBER) {
+        double v = p->cur.value;
+        parser_advance(p);
+        return v;
+    }
+
+    if (p->cur.kind == TOK_LPAREN) {
+        parser_advance(p);
+        double v = parse_expression(p);
+        if (p->cur.kind == TOK_RPAREN) {
+            parser_advance(p);
+        } else if (!p->failed) {
+            p->failed = 1;
+            fprintf(stderr, "Ошибка: не хватает ')'\n");
+        }
+        return v;
+    }
+
+    p->failed = 1;
+    fprintf(stderr, "Ошибка: неожиданный символ в выражении\n");
+    return 0.0;
+}
+
+/* term := factor { ('*' | '/') factor } */
+static double parse_term(parser *p) {
+    double left = parse_factor(p);
+
+    while (!p->failed) {
+        if (p->cur.kind == TOK_STAR) {
+            parser_advance(p);
+            left *= parse_factor(p);
+        } else if (p->cur.kind == TOK_SLASH) {
+            parser_advance(p);
+            double right = parse_factor(p);
+            if (right == 0.0) {
+                p->failed = 1;
+                fprintf(stderr, "Ошибка: деление на ноль\n");
+                return 0.0;
             }
+            left /= right;
+        } else {
+            break;
         }
     }
-
-    if (k > 0) {
-        buf[k] = '\0';
-        list_push(&out, buf);
-    }
-
-    return out;
+    return left;
 }
 
-double solve(StrList pars, int i, int last_power, int level){
-    char *endptr;
-    printf("\ni: %i", i);
-    char* num = pars.items[i];
-    if (i > pars.count - 1){
-        printf("%i > ERROR!", level);
-        return 0;
-    }
-    if (i == pars.count - 1 || last_power >= power_symbol(pars.items[i + 1])){
-        global_index += 2;
-        double val = strtod(num, &endptr);
-        printf(" [%i> %f, %i]", level, val, i);
-        return val;
-    }
-    char* d = pars.items[i + 1];
-    printf(" {%i> %s, %s}", level, num, d);
-    
-    double val = strtod(num, &endptr);
-    double new_val = val;
-    int power = power_symbol(d);
-    i+=2;
-    global_index += 2;
-    level += 1;
-    if (d[0] == '+'){
-        new_val += solve(pars, i, power_symbol(d), level);
-    } 
-    if (d[0] == '-'){
-        new_val -= solve(pars, i, power_symbol(d), level);
-    } 
-    if (d[0] == '*'){
-        new_val *= solve(pars, i, power_symbol(d), level);
-    } 
-    if (d[0] == '/'){
-        new_val /= solve(pars, i, power_symbol(d), level);
-    } 
+/* expression := term { ('+' | '-') term } */
+static double parse_expression(parser *p) {
+    double left = parse_term(p);
 
-    printf("\ni: %i (%i> %f)", i-2, level-1, new_val);
-
-    return new_val;
+    while (!p->failed) {
+        if (p->cur.kind == TOK_PLUS) {
+            parser_advance(p);
+            left += parse_term(p);
+        } else if (p->cur.kind == TOK_MINUS) {
+            parser_advance(p);
+            left -= parse_term(p);
+        } else {
+            break;
+        }
+    }
+    return left;
 }
 
-double base_solve(StrList pars){
-    int i=0;
-    int last_power = -1;
-    double val = 0;
-    int gi;
-    int at=0;
-    double add = solve(pars, i, last_power, 0);
-
-    printf("\n FINAL: %f, %f <%i>", add, val, global_index);
-    //global_index++;
-    i = global_index;
-    return val;
+/* ------------------------------------------------------------------
+ * Вывод результата: целое печатаем без дробной части,
+ * остальное — с точностью 10 значащих цифр
+ * ------------------------------------------------------------------ */
+static void print_answer(double result) {
+    if (result == (long long)result) {
+        printf("Ответ: %lld\n", (long long)result);
+    } else {
+        printf("Ответ: %.10g\n", result);
+    }
 }
 
-int main(void){
-    char example[512];
-    if (fgets(example, sizeof(example), stdin) == NULL) {
-        // ошибка или EOF
+/* ------------------------------------------------------------------
+ * Главная функция
+ * ------------------------------------------------------------------ */
+int main(void) {
+    char input[512];
+
+    printf("Введите выражение: ");
+    fflush(stdout);
+
+    /* Читаем одну строку из stdin (как в оригинальном C-Calc) */
+    if (fgets(input, sizeof(input), stdin) == NULL) {
         return 1;
     }
-    example[strcspn(example, "\n")] = '\0';   // убрать '\n' с конца
-    printf("Solve \"%s\" is always easy!\n", example);
-    StrList pars = parser(example);
-    for (int i=0; i<pars.count; i++){
-        printf("%s, ", pars.items[i]);
+    input[strcspn(input, "\n")] = '\0'; /* убираем '\n' с конца */
+
+    lexer lx;
+    lx.src = input;
+    lx.pos = 0;
+
+    parser p;
+    p.lx = &lx;
+    p.failed = 0;
+
+    parser_advance(&p);
+    double result = parse_expression(&p);
+
+    /* После выражения не должно остаться лишних символов */
+    if (!p.failed && p.cur.kind != TOK_END) {
+        p.failed = 1;
+        fprintf(stderr, "Ошибка: лишние символы в конце выражения\n");
     }
-    printf("\nAll items: %zu", pars.count);
-    double ans = base_solve(pars);
-    printf("\nAnswer: %f", ans);
+
+    if (p.failed) {
+        fprintf(stderr, "Не удалось вычислить выражение: \"%s\"\n", input);
+        return 1;
+    }
+
+    print_answer(result);
+    return 0;
 }

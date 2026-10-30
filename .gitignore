@@ -1,9 +1,13 @@
-bin/
-obj/
-.vscode/
+# Скомпилированный бинарник
+c_calc
+calc
 *.exe
-*.ilk
-*.pdb
+
+# Временные файлы компиляции
+*.o
 *.obj
-main.obj
-e-test.c
+*.out
+
+# Настройки редакторов и IDE
+.vscode/
+.idea/
